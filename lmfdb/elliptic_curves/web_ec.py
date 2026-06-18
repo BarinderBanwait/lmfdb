@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import yaml
 from flask import url_for
@@ -10,7 +11,7 @@ from lmfdb.utils import web_latex, encode_plot, prop_int_pretty, raw_typeset, di
 from lmfdb.utils.web_display import dispZmat_from_list
 from lmfdb.utils.common_regex import G1_LOOKUP_RE, ZLIST_RE
 
-from sage.all import EllipticCurve, KodairaSymbol, latex, lazy_attribute, ZZ, QQ, prod, Factorization, PowerSeriesRing, prime_range, RealField, euler_phi, GL, Integers
+from sage.all import EllipticCurve, KodairaSymbol, latex, lazy_attribute, ZZ, QQ, prod, Factorization, PowerSeriesRing, prime_range, RealField, euler_phi, GL, Integers, cached_function
 
 
 RR = RealField(100) # reals in the database were computed to 100 bits (30 digits) but stored with 128 bits which must be truncated
@@ -20,6 +21,20 @@ CP_URL_PREFIX = "https://mathstats.uncg.edu/sites/pauli/congruence/" # Needs tto
 
 OPTIMALITY_BOUND = 400000 # optimality of curve no. 1 in class (except class 990h) only proved in all cases for conductor less than this
 CREMONA_BOUND = 500000 # above this bound we have nor Cremona labels (no Clabel, Ciso, Cnumber), no Manin constant or optimality info.
+
+
+@cached_function
+def get_verify_bsd_data():
+    """Load the bundled verify_bsd.json (keyed by lmfdb_iso) once.
+
+    Returns a dict mapping isogeny-class label -> {'verify_bsd': [...primes...]}.
+    Returns {} if the file is absent, so pages degrade gracefully.
+    """
+    fname = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'verify_bsd.json')
+    if not os.path.exists(fname):
+        return {}
+    with open(fname) as f:
+        return json.load(f)
 
 cremona_label_regex = re.compile(r'(\d+)([a-z]+)(\d*)')
 lmfdb_label_regex = re.compile(r'(\d+)\.([a-z]+)(\d*)')
@@ -614,6 +629,12 @@ class WebEC():
             self.class_name = self.lmfdb_iso
         data['class_name'] = self.class_name
         data['Cnumber'] = self.Cnumber if N < CREMONA_BOUND else None
+
+        # Strong BSD verification (isogeny-class invariant, keyed by lmfdb_iso).
+        # verify_bsd is the list of primes p for which BSD(E,p) is not yet known
+        # ([] means fully verified); None means the class is absent from the data.
+        verify_bsd_entry = get_verify_bsd_data().get(self.lmfdb_iso)
+        data['verify_bsd'] = verify_bsd_entry.get('verify_bsd') if verify_bsd_entry is not None else None
 
         self.friends = [
             ('Isogeny class ' + self.class_name, self.class_url),

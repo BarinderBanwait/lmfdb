@@ -34,3 +34,17 @@ LMFDBinventory.log
 LMFDBtransactions_inv.log
 
 scripts/groups/Make-images/images/*.png
+
+# --- BSD verification scratch artifacts (verify_bsd branch) ---
+# Scratch scripts, run logs, pickles, and large intermediate label lists from
+# computing prove_BSD output. Fenced off so a stray `git add -A` can't sweep
+# them into the PR diff. Root-anchored (leading /) so nothing inside lmfdb/ is
+# affected. NOTE: bsd_results.csv is intentionally left TRACKABLE on the
+# assumption it's (or becomes) your illustrative sample — commit it
+# deliberately. If it's actually scratch, add it to this block.
+/bsd_*.py
+/filter_no_3_isogeny.py
+/bsd_run*.log
+/bsd_*.pkl
+/cremona_labels.txt
+/cremona_labels_no_3_iso.txt

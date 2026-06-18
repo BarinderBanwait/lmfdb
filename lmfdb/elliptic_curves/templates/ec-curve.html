@@ -349,6 +349,18 @@ $${{ data.mwbsd.formula }}$$
 {{ place_code('bsd_formula') }}
 </center>
 
+<p>
+<b>Strong BSD verified</b>:
+{% if data.data.verify_bsd is none %}
+  False. $\mathrm{BSD}(E,p)$ has not been verified for any $p$.
+{% elif data.data.verify_bsd | length == 0 %}
+  True.
+{% else %}
+  False. $\mathrm{BSD}(E,p)$ is not known for the following primes:
+  ${{ data.data.verify_bsd | join(', ') }}$.
+{% endif %}
+</p>
+
 {# %%%%%%%%%%%%%%%% END OF TABLE %%%%%%%%%%%%%%%%%%% #}
 
     <h2> {{KNOWL('ec.q.modular_parametrization', title='Modular invariants')}}</h2>
