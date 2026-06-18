@@ -350,13 +350,13 @@ $${{ data.mwbsd.formula }}$$
 </center>
 
 <p>
-<b>Strong BSD verified</b>:
+Strong BSD verified:
 {% if data.data.verify_bsd is none %}
   False. $\mathrm{BSD}(E,p)$ has not been verified for any $p$.
 {% elif data.data.verify_bsd | length == 0 %}
-  True.
+  True
 {% else %}
-  False. $\mathrm{BSD}(E,p)$ is not known for the following primes:
+  False. $\mathrm{BSD}(E,p)$ is not unconditionally known for the following primes:
   ${{ data.data.verify_bsd | join(', ') }}$.
 {% endif %}
 </p>
