@@ -52,6 +52,61 @@ class NumberFieldTest(LmfdbTest):
     def test_url_label(self):
         self.check_args('/NumberField/2.2.5.1', '0.481211825') # regulator
 
+    # ---- Lean certificate download (currently shipped only for 5.1.3790297.2) ----
+    LEAN_LABEL = '5.1.3790297.2'
+
+    def _skip_if_lean_field_absent(self):
+        from lmfdb.number_fields.web_number_field import WebNumberField
+        if WebNumberField(self.LEAN_LABEL).is_null():
+            self.skipTest('%s not present in the test database' % self.LEAN_LABEL)
+
+    def test_lean_certificate_link(self):
+        # The field that ships a certificate advertises it in the Downloads section.
+        self._skip_if_lean_field_absent()
+        self.check_args('/NumberField/' + self.LEAN_LABEL,
+                        ['Lean certificate', self.LEAN_LABEL + '/lean'])
+
+    def test_lean_certificate_download(self):
+        # The download is a valid zip of a buildable Lake project whose entry-point
+        # file has the live LMFDB discriminant/class number spliced in.
+        import io
+        import zipfile
+        self._skip_if_lean_field_absent()
+        r = self.tc.get('/NumberField/' + self.LEAN_LABEL + '/lean')
+        assert r.status_code == 200
+        assert r.mimetype == 'application/zip'
+        assert 'attachment' in r.headers.get('Content-Disposition', '')
+        zf = zipfile.ZipFile(io.BytesIO(r.get_data()))
+        assert zf.testzip() is None
+        names = zf.namelist()
+        assert self.LEAN_LABEL + '/lakefile.lean' in names
+        results = zf.read(self.LEAN_LABEL + '/IdealArithmetic/Examples/'
+                          'NF5_1_3790297_2/Results5_1_3790297_2.lean').decode()
+        assert 'discr K = 3790297' in results        # discriminant pulled from LMFDB
+        assert 'classNumber K = 4' in results         # class number pulled from LMFDB
+        assert 'WARNING' not in zf.read(self.LEAN_LABEL + '/README.txt').decode()
+
+    def test_lean_certificate_absent(self):
+        # A field with no certificate must not advertise the link, and its download
+        # endpoint must 404 (true regardless of test-database contents).
+        self.not_check_args('/NumberField/2.2.5.1', 'Lean certificate')
+        assert self.tc.get('/NumberField/2.2.5.1/lean').status_code == 404
+
+    def test_lean_certificate_template_not_hardcoded(self):
+        # The committed certificate source must carry NO hardcoded discriminant /
+        # class number -- only placeholders -- so the download has to look them up.
+        import os
+        from lmfdb.number_fields.number_field import lean_certificate_dir
+        cert_dir = lean_certificate_dir(self.LEAN_LABEL)
+        assert cert_dir is not None
+        results = open(os.path.join(
+            cert_dir, 'IdealArithmetic', 'Examples', 'NF5_1_3790297_2',
+            'Results5_1_3790297_2.lean')).read()
+        assert 'discr K = LMFDB_discriminant' in results
+        assert 'classNumber K = LMFDB_classNumber' in results
+        assert 'discr K = 3790297' not in results     # the value is NOT in the source
+        assert 'classNumber K = 4' not in results
+
     def test_url_naturallabel(self):
         self.check_args('/NumberField/Qsqrt5', '0.481211825') # regulator
 

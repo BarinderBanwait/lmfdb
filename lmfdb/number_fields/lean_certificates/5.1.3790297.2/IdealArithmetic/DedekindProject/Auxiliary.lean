@@ -1,0 +1,6 @@
+import IdealArithmetic.DedekindProject.Auxiliary.AlgebraAuxiliaryLemmas
+import IdealArithmetic.DedekindProject.Auxiliary.PolynomialBasics
+import IdealArithmetic.DedekindProject.Auxiliary.PolynomialRadical
+import IdealArithmetic.DedekindProject.Auxiliary.QuotientModules
+import IdealArithmetic.DedekindProject.Auxiliary.LinearAlgebraAuxiliaryLemmas
+import IdealArithmetic.DedekindProject.Auxiliary.Semilinear

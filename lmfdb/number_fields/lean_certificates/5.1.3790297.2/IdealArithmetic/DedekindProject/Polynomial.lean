@@ -1,0 +1,3 @@
+import IdealArithmetic.DedekindProject.Polynomial.BrillhartIrreducibilityTest
+import IdealArithmetic.DedekindProject.Polynomial.IrreduciblePolynomialZModp
+import IdealArithmetic.DedekindProject.Polynomial.PolynomialsAsLists

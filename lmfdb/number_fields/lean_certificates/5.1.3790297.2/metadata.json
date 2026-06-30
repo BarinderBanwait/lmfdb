@@ -1,0 +1,6 @@
+{
+  "label": "5.1.3790297.2",
+  "polynomial": "X^5 - X^4 + 3*X^2 + 21*X + 4",
+  "entry_point": "IdealArithmetic/Examples/NF5_1_3790297_2/Results5_1_3790297_2.lean",
+  "lean_toolchain": "leanprover/lean4:v4.30.0-rc1"
+}
