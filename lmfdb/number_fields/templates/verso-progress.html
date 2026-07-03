@@ -1,0 +1,52 @@
+{% extends 'homepage.html' %}
+{% block content %}
+
+{% if status.state == 'failed' %}
+
+<h2>Rendering failed</h2>
+
+<p>
+  The Verso certificate for {{ label }} could not be rendered.
+  {% if status.error %}The reported error was:{% endif %}
+</p>
+{% if status.error %}
+<pre style="white-space: pre-wrap;">{{ status.error }}</pre>
+{% endif %}
+
+{% if status.log_tail %}
+<p>End of the render log:</p>
+<pre style="white-space: pre-wrap; max-height: 30em; overflow-y: auto; background: #f6f6f6; padding: 0.5em;">{{ status.log_tail }}</pre>
+{% endif %}
+
+<p>
+  <a href="{{ url_for('.nf_verso_certificate', label=label, retry=1) }}">Try again</a>
+  or return to the
+  <a href="{{ url_for('.by_label', label=label) }}">number field page</a>.
+</p>
+
+{% else %}
+
+<h2>Rendering in progress&hellip;</h2>
+
+<p>
+  The Lean kernel is checking the certificate for {{ label }} and Verso is
+  rendering it as an interactive page. This typically takes a few minutes on
+  the first visit; the result is cached, so later visits are instant.
+</p>
+
+<p>
+  Current phase: <code>{{ status.phase or 'starting' }}</code>
+  {% if elapsed is not none %}
+  (running for {{ (elapsed // 60) | int }}m {{ (elapsed % 60) | int }}s)
+  {% endif %}
+</p>
+
+<p>This page refreshes automatically every 10 seconds.</p>
+
+<script type="text/javascript">
+  setTimeout(function () { window.location.reload(); }, 10000);
+</script>
+
+{% endif %}
+
+{% endblock %}

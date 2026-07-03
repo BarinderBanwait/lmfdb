@@ -153,6 +153,169 @@ class NumberFieldTest(LmfdbTest):
         assert 'discr K = 3790297' not in results
         assert 'classNumber K = 4' not in results
 
+    # ---- Verso certificate (server-side rendered) ----
+
+    def _verso_patches(self, cache_root):
+        # Enable the feature and isolate its cache without a real build root.
+        return [
+            patch('lmfdb.number_fields.verso_certificate.verso_certificate_enabled',
+                  return_value=True),
+            patch('lmfdb.number_fields.number_field.verso_certificate_enabled',
+                  return_value=True),
+            patch('lmfdb.number_fields.verso_certificate._bootstrap_meta',
+                  return_value={'verso_rev': 'testrev', 'lean_toolchain': 'testchain'}),
+            patch.dict(os.environ, {'LMFDB_VERSO_CERT_CACHE': cache_root}),
+        ]
+
+    def _verso_render_dir(self, label):
+        # Only meaningful inside the _verso_patches context (cache env + meta).
+        from lmfdb.number_fields import verso_certificate as vc
+        from lmfdb.number_fields.web_number_field import WebNumberField
+        return vc._render_dir(label, WebNumberField(label))
+
+    def test_verso_certificate_gating(self):
+        # With no local pipeline and no prebuilt render registered: no button,
+        # and the endpoints 404.
+        with patch('lmfdb.number_fields.verso_certificate._prebuilt_renders',
+                   return_value={}):
+            self.not_check_args('/NumberField/' + self.LEAN_SMALL_LABEL, 'Verso certificate')
+            assert self.tc.get('/NumberField/' + self.LEAN_SMALL_LABEL + '/verso').status_code == 404
+            assert self.tc.get('/NumberField/' + self.LEAN_SMALL_LABEL
+                               + '/verso/index.html').status_code == 404
+            # Live pipeline enabled: the button appears next to the Lean certificate.
+            with patch('lmfdb.number_fields.verso_certificate.verso_certificate_enabled',
+                       return_value=True):
+                self.check_args('/NumberField/' + self.LEAN_SMALL_LABEL,
+                                ['Verso certificate', self.LEAN_SMALL_LABEL + '/verso'])
+
+    def test_verso_certificate_prebuilt_redirect(self):
+        # Deployments without a Lean toolchain (no env vars set) still offer
+        # the demo fields: verso_prebuilt.json links pre-rendered pages hosted
+        # elsewhere, and the /verso route redirects to them.
+        from lmfdb.number_fields.verso_certificate import prebuilt_verso_url
+        label = self.LEAN_SMALL_LABEL
+        url = prebuilt_verso_url(label)
+        assert url is not None and url.startswith('https://')
+        self.check_args('/NumberField/' + label,
+                        ['Verso certificate', label + '/verso'])
+        r = self.tc.get('/NumberField/' + label + '/verso')
+        assert r.status_code == 302
+        assert r.headers['Location'] == url
+        # No local assets exist in prebuilt mode.
+        assert self.tc.get('/NumberField/' + label
+                           + '/verso/code.css').status_code == 404
+
+    def test_verso_certificate_running_page(self):
+        import contextlib
+        import json
+        import time as time_mod
+        label = self.LEAN_SMALL_LABEL
+        with tempfile.TemporaryDirectory() as cache_root:
+            with contextlib.ExitStack() as stack:
+                for p in self._verso_patches(cache_root):
+                    stack.enter_context(p)
+                rd = self._verso_render_dir(label)
+                os.makedirs(rd)
+                now = time_mod.time()
+                with open(os.path.join(rd, 'status.json'), 'w') as fh:
+                    json.dump({'state': 'running', 'phase': 'lake-build',
+                               'pid': os.getpid(), 'started': now - 30,
+                               'updated': now}, fh)
+                r = self.tc.get('/NumberField/' + label + '/verso')
+                assert r.status_code == 200
+                page = r.get_data(as_text=True)
+                assert 'Rendering in progress' in page
+                assert 'lake-build' in page
+                assert 'refreshes automatically' in page
+
+    def test_verso_certificate_failed_page_and_stale_worker(self):
+        import contextlib
+        import json
+        import time as time_mod
+        label = self.LEAN_SMALL_LABEL
+        with tempfile.TemporaryDirectory() as cache_root:
+            with contextlib.ExitStack() as stack:
+                for p in self._verso_patches(cache_root):
+                    stack.enter_context(p)
+                rd = self._verso_render_dir(label)
+                os.makedirs(rd)
+                with open(os.path.join(rd, 'render.log'), 'w') as fh:
+                    fh.write('error: elaboration exploded\n')
+                # A 'running' worker whose heartbeat is stale counts as failed.
+                with open(os.path.join(rd, 'status.json'), 'w') as fh:
+                    json.dump({'state': 'running', 'phase': 'literate',
+                               'pid': os.getpid(),
+                               'started': time_mod.time() - 7200,
+                               'updated': time_mod.time() - 7200}, fh)
+                r = self.tc.get('/NumberField/' + label + '/verso')
+                assert r.status_code == 200
+                page = r.get_data(as_text=True)
+                assert 'Rendering failed' in page
+                assert 'elaboration exploded' in page
+                assert 'Try again' in page
+
+    def test_verso_certificate_ready_redirect_and_assets(self):
+        import contextlib
+        import json
+        label = self.LEAN_SMALL_LABEL
+        with tempfile.TemporaryDirectory() as cache_root:
+            with contextlib.ExitStack() as stack:
+                for p in self._verso_patches(cache_root):
+                    stack.enter_context(p)
+                rd = self._verso_render_dir(label)
+                entry = 'IdealArithmetic/Examples/NF2_2_5_1/Results2_2_5_1/index.html'
+                os.makedirs(os.path.join(rd, 'html', os.path.dirname(entry)))
+                with open(os.path.join(rd, 'html', entry), 'w') as fh:
+                    fh.write('<html>VERSO TEST PAGE</html>')
+                with open(os.path.join(rd, 'meta.json'), 'w') as fh:
+                    json.dump({'entry_html': entry}, fh)
+                open(os.path.join(rd, '.ready'), 'w').close()
+                r = self.tc.get('/NumberField/' + label + '/verso')
+                assert r.status_code == 302
+                assert entry in r.headers['Location']
+                r = self.tc.get('/NumberField/' + label + '/verso/' + entry)
+                assert r.status_code == 200
+                assert 'VERSO TEST PAGE' in r.get_data(as_text=True)
+                assert self.tc.get('/NumberField/' + label
+                                   + '/verso/no-such-file.js').status_code == 404
+                assert self.tc.get('/NumberField/' + label
+                                   + '/verso/%2e%2e/%2e%2e/status.json').status_code == 404
+
+    def test_verso_start_render_stages_interpolated_sources(self):
+        # start_verso_render must stage the generated NF sources with the live
+        # database values spliced into the entry point (the kernel checks real
+        # numbers, not placeholders), then spawn the detached worker.
+        import contextlib
+        from lmfdb.number_fields import verso_certificate as vc
+        from lmfdb.number_fields.web_number_field import WebNumberField
+        label = self.LEAN_SMALL_LABEL
+        with tempfile.TemporaryDirectory() as cache_root, \
+                tempfile.TemporaryDirectory() as cert_cache:
+            with contextlib.ExitStack() as stack:
+                for p in self._verso_patches(cache_root):
+                    stack.enter_context(p)
+                stack.enter_context(
+                    patch.dict(os.environ, {'LMFDB_LEAN_CERT_CACHE': cert_cache,
+                                            'LMFDB_VERSO_BUILD_ROOT': cache_root}))
+                popen = stack.enter_context(
+                    patch('lmfdb.number_fields.verso_certificate.subprocess.Popen'))
+                nf = WebNumberField(label)
+                status = vc.start_verso_render(label, nf)
+                assert status['state'] == 'running'
+                rd = vc._render_dir(label, nf)
+                staged = os.path.join(rd, 'src', 'Results2_2_5_1.lean')
+                results = open(staged).read()
+                assert 'discr K = 5' in results
+                assert 'classNumber K = 1' in results
+                assert 'LMFDB_discriminant' not in results
+                cmd = popen.call_args.args[0]
+                assert cmd[1] == vc._WORKER
+                assert 'render' in cmd
+                assert 'NF2_2_5_1' in cmd
+                # A second call must not spawn a second worker.
+                vc.start_verso_render(label, nf)
+                assert popen.call_count == 1
+
     def test_url_naturallabel(self):
         self.check_args('/NumberField/Qsqrt5', '0.481211825') # regulator
 

@@ -1,6 +1,7 @@
 
 import os
 import re
+import time
 
 from flask import abort, render_template, request, url_for, redirect, send_file, make_response
 from markupsafe import Markup
@@ -34,7 +35,13 @@ from lmfdb.number_fields.web_number_field import (
     field_pretty, WebNumberField, nf_knowl_guts, factor_base_factor,
     factor_base_factorization_latex, fake_label, formatfield)
 from lmfdb.number_fields.lean_certificate import (
-    lean_certificate_available, send_lean_certificate_zip)
+    lean_certificate_available, send_lean_certificate_zip,
+    LeanCertificateError, LeanCertificateUnavailable)
+from lmfdb.number_fields.verso_certificate import (
+    verso_certificate_enabled, verso_certificate_available,
+    prebuilt_verso_url,
+    get_verso_render_status, start_verso_render, reset_failed_render,
+    serve_verso_asset, verso_entry_url_asset)
 
 def bread_prefix(): return [('Number fields', url_for(".number_field_render_webpage"))]
 
@@ -718,6 +725,9 @@ def render_field_webpage(args):
     if lean_certificate_available(label, nf):
         downloads.append(('Lean certificate',
                           url_for('.nf_lean_certificate', label=label)))
+        if verso_certificate_available(label, nf):
+            downloads.append(('Verso certificate',
+                              url_for('.nf_verso_certificate', label=label)))
     from lmfdb.artin_representations.math_classes import NumberFieldGaloisGroup
     from lmfdb.artin_representations.math_classes import artin_label_pretty
     try:
@@ -792,6 +802,65 @@ def nf_lean_certificate(label):
     if nf.is_null():
         return abort(404, f"There is no number field with label {label}")
     return send_lean_certificate_zip(label, nf)
+
+
+@nf_page.route("/<label>/verso")
+def nf_verso_certificate(label):
+    """Render the Lean certificate for ``label`` as an interactive Verso page
+    (highlighted code, hovers, proof states).  The page is produced by
+    elaborating the certificate -- with the live LMFDB values interpolated --
+    through the Lean kernel, so serving it constitutes a machine-checked
+    verification.  Rendering takes minutes and runs in a detached worker; this
+    page shows progress and auto-refreshes until the result is ready."""
+    if not FIELD_LABEL_RE.fullmatch(label):
+        return abort(404, f"Invalid label {label}")
+    nf = WebNumberField(label)
+    if nf.is_null():
+        return abort(404, f"There is no number field with label {label}")
+    if not verso_certificate_available(label, nf):
+        return abort(404, f"No Verso certificate available for {label}")
+    if not verso_certificate_enabled():
+        # No local render pipeline, but a pre-rendered copy is hosted
+        # elsewhere (verso_prebuilt.json) -- hand the visitor over to it.
+        return redirect(prebuilt_verso_url(label))
+    title = f"Verso certificate - {label}"
+    bread = bread_prefix() + [(label, url_for(".by_label", label=label)),
+                              ("Verso certificate", " ")]
+
+    def progress_page(status):
+        elapsed = time.time() - status["started"] if status.get("started") else None
+        return render_template("verso-progress.html", title=title, bread=bread,
+                               label=label, status=status, elapsed=elapsed)
+
+    status = get_verso_render_status(label, nf)
+    if status["state"] == "failed" and request.args.get("retry"):
+        reset_failed_render(label, nf)
+        status = get_verso_render_status(label, nf)
+    if status["state"] == "ready":
+        return redirect(url_for(".nf_verso_certificate_asset", label=label,
+                                asset=verso_entry_url_asset(label, nf)))
+    if status["state"] == "absent":
+        try:
+            status = start_verso_render(label, nf)
+        except LeanCertificateUnavailable as err:
+            return abort(404, str(err))
+        except LeanCertificateError as err:
+            status = {"state": "failed", "error": str(err), "log_tail": ""}
+    return progress_page(status)
+
+
+@nf_page.route("/<label>/verso/<path:asset>")
+def nf_verso_certificate_asset(label, asset):
+    if not FIELD_LABEL_RE.fullmatch(label):
+        return abort(404, f"Invalid label {label}")
+    nf = WebNumberField(label)
+    if nf.is_null():
+        return abort(404, f"There is no number field with label {label}")
+    # Assets only exist for locally rendered certificates; prebuilt renders
+    # are hosted (assets included) at their external URL.
+    if not (verso_certificate_enabled() and verso_certificate_available(label, nf)):
+        return abort(404, f"No Verso certificate available for {label}")
+    return serve_verso_asset(label, nf, asset)
 
 
 @nf_page.route("/interesting")
