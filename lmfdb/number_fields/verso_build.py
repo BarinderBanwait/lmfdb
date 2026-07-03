@@ -167,6 +167,48 @@ def bootstrap_build_root(build_root, template_dir=_DEFAULT_TEMPLATE, force=False
 # render
 
 
+_DIR_INDEX_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; max-width: 46rem; margin: 3rem auto;
+         padding: 0 1.2rem; color: #131C2E; line-height: 1.6; }}
+  h1 {{ font-size: 1.25rem; font-family: ui-monospace, monospace; font-weight: 500; }}
+  p {{ color: #5A6478; }}
+  ul {{ list-style: none; padding: 0; }}
+  li {{ padding: 0.25rem 0; font-family: ui-monospace, monospace; font-size: 0.95rem; }}
+  a {{ color: #131C2E; }}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+<p>Modules of this rendered Lean certificate:</p>
+<ul>
+{items}
+</ul>
+</body>
+</html>
+"""
+
+
+def _write_directory_indexes(html_dir):
+    """verso-html only writes pages for rendered modules, but its breadcrumb
+    links point at the ancestor (namespace) directories too; on a static host
+    those would 404.  Give every page-less directory a minimal child index."""
+    for root, dirs, files in os.walk(html_dir):
+        dirs[:] = sorted(d for d in dirs if not d.startswith((".", "-")))
+        if "index.html" in files or not dirs:
+            continue
+        rel = os.path.relpath(root, html_dir)
+        title = "Certificate modules" if rel == "." else rel.replace(os.sep, ".")
+        items = "\n".join(f'<li><a href="{d}/">{d}</a></li>' for d in dirs)
+        with open(os.path.join(root, "index.html"), "w") as fh:
+            fh.write(_DIR_INDEX_TEMPLATE.format(title=title, items=items))
+
+
 def _acquire_lock(path, timeout, status=None, phase=None):
     deadline = time.time() + timeout
     while True:
@@ -246,6 +288,7 @@ def render_certificate(build_root, src_dir, nf_name, out_dir, status_path,
         entry = os.path.join(html_tmp, entry_rel)
         if not os.path.isfile(entry):
             raise VersoBuildError(f"Rendered site is missing the entry page {entry_rel}")
+        _write_directory_indexes(html_tmp)
         meta = {"entry_html": entry_rel.replace(os.sep, "/"), "nf_name": nf_name,
                 "modules": modules, "finished": time.time()}
         with open(os.path.join(out_dir, "meta.json"), "w") as fh:
