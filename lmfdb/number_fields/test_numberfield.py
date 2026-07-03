@@ -1,3 +1,7 @@
+import os
+import tempfile
+from unittest.mock import patch
+
 from lmfdb.tests import LmfdbTest
 
 class NumberFieldTest(LmfdbTest):
@@ -52,8 +56,9 @@ class NumberFieldTest(LmfdbTest):
     def test_url_label(self):
         self.check_args('/NumberField/2.2.5.1', '0.481211825') # regulator
 
-    # ---- Lean certificate download (currently shipped only for 5.1.3790297.2) ----
+    # ---- Lean certificate download ----
     LEAN_LABEL = '5.1.3790297.2'
+    LEAN_SMALL_LABEL = '2.2.5.1'
 
     def _skip_if_lean_field_absent(self):
         from lmfdb.number_fields.web_number_field import WebNumberField
@@ -61,50 +66,91 @@ class NumberFieldTest(LmfdbTest):
             self.skipTest('%s not present in the test database' % self.LEAN_LABEL)
 
     def test_lean_certificate_link(self):
-        # The field that ships a certificate advertises it in the Downloads section.
+        # Fields with enough database data advertise an on-demand Lean certificate.
         self._skip_if_lean_field_absent()
         self.check_args('/NumberField/' + self.LEAN_LABEL,
                         ['Lean certificate', self.LEAN_LABEL + '/lean'])
+        self.check_args('/NumberField/' + self.LEAN_SMALL_LABEL,
+                        ['Lean certificate', self.LEAN_SMALL_LABEL + '/lean'])
 
     def test_lean_certificate_download(self):
-        # The download is a valid zip of a buildable Lake project whose entry-point
-        # file has the live LMFDB discriminant/class number spliced in.
         import io
         import zipfile
         self._skip_if_lean_field_absent()
-        r = self.tc.get('/NumberField/' + self.LEAN_LABEL + '/lean')
-        assert r.status_code == 200
-        assert r.mimetype == 'application/zip'
-        assert 'attachment' in r.headers.get('Content-Disposition', '')
-        zf = zipfile.ZipFile(io.BytesIO(r.get_data()))
-        assert zf.testzip() is None
-        names = zf.namelist()
-        assert self.LEAN_LABEL + '/lakefile.lean' in names
-        results = zf.read(self.LEAN_LABEL + '/IdealArithmetic/Examples/'
-                          'NF5_1_3790297_2/Results5_1_3790297_2.lean').decode()
-        assert 'discr K = 3790297' in results        # discriminant pulled from LMFDB
-        assert 'classNumber K = 4' in results         # class number pulled from LMFDB
-        assert 'WARNING' not in zf.read(self.LEAN_LABEL + '/README.txt').decode()
+        with tempfile.TemporaryDirectory() as cert_dir:
+            entry_dir = os.path.join(
+                cert_dir, 'IdealArithmetic', 'Examples', 'NF5_1_3790297_2')
+            os.makedirs(entry_dir)
+            open(os.path.join(cert_dir, 'lakefile.lean'), 'w').write('import Lake\n')
+            open(os.path.join(cert_dir, 'lean-toolchain'), 'w').write('leanprover/lean4:v4.30.0-rc1\n')
+            open(os.path.join(entry_dir, 'Results5_1_3790297_2.lean'), 'w').write(
+                "theorem K_discr' : discr K = LMFDB_discriminant := K_discr\n"
+                "theorem class_number_K_eq_4' : classNumber K = LMFDB_classNumber := class_number_K_eq_4\n")
+            with patch('lmfdb.number_fields.lean_certificate.get_or_create_certificate_project',
+                       return_value=cert_dir):
+                r = self.tc.get('/NumberField/' + self.LEAN_LABEL + '/lean')
+            assert r.status_code == 200
+            assert r.mimetype == 'application/zip'
+            assert 'attachment' in r.headers.get('Content-Disposition', '')
+            zf = zipfile.ZipFile(io.BytesIO(r.get_data()))
+            assert zf.testzip() is None
+            names = zf.namelist()
+            assert self.LEAN_LABEL + '/lakefile.lean' in names
+            results = zf.read(self.LEAN_LABEL + '/IdealArithmetic/Examples/'
+                              'NF5_1_3790297_2/Results5_1_3790297_2.lean').decode()
+            assert 'discr K = 3790297' in results
+            assert 'classNumber K = 4' in results
+            assert 'WARNING' not in zf.read(self.LEAN_LABEL + '/README.txt').decode()
+
+    def test_lean_certificate_generated_end_to_end(self):
+        # For a small field the certificate is generated on the fly: the download
+        # is a buildable Lake project whose entry point carries the interpolated
+        # LMFDB values and is imported from the library root (so `lake build`
+        # checks it).
+        import io
+        import zipfile
+        with tempfile.TemporaryDirectory() as cache_root:
+            with patch.dict(os.environ, {'LMFDB_LEAN_CERT_CACHE': cache_root}):
+                r = self.tc.get('/NumberField/' + self.LEAN_SMALL_LABEL + '/lean')
+            assert r.status_code == 200
+            assert r.mimetype == 'application/zip'
+            zf = zipfile.ZipFile(io.BytesIO(r.get_data()))
+            assert zf.testzip() is None
+            pre = self.LEAN_SMALL_LABEL + '/'
+            root = zf.read(pre + 'IdealArithmetic.lean').decode()
+            assert 'import IdealArithmetic.Examples.NF2_2_5_1.Results2_2_5_1' in root
+            results = zf.read(
+                pre + 'IdealArithmetic/Examples/NF2_2_5_1/Results2_2_5_1.lean').decode()
+            assert 'discr K = 5' in results
+            assert 'classNumber K = 1' in results
+            assert pre + 'lakefile.lean' in zf.namelist()
+            assert pre + 'lean-toolchain' in zf.namelist()
 
     def test_lean_certificate_absent(self):
-        # A field with no certificate must not advertise the link, and its download
-        # endpoint must 404 (true regardless of test-database contents).
-        self.not_check_args('/NumberField/2.2.5.1', 'Lean certificate')
-        assert self.tc.get('/NumberField/2.2.5.1/lean').status_code == 404
+        # Invalid labels and missing fields still do not have certificate downloads.
+        assert self.tc.get('/NumberField/not-a-label/lean').status_code == 404
+        assert self.tc.get('/NumberField/99.99.999.99/lean').status_code == 404
+
+    def test_lean_certificate_infeasible(self):
+        # A field whose Minkowski bound is beyond the feasibility threshold is not
+        # advertised and its download endpoint refuses.
+        from lmfdb import db
+        label = db.nf_fields.lucky(
+            {'degree': 2, 'disc_abs': {'$gt': 10**8}, 'class_number': {'$exists': True}},
+            projection='label')
+        if label is None:
+            self.skipTest('no large-discriminant quadratic in the test database')
+        self.not_check_args('/NumberField/' + label, 'Lean certificate')
+        assert self.tc.get('/NumberField/' + label + '/lean').status_code == 404
 
     def test_lean_certificate_template_not_hardcoded(self):
-        # The committed certificate source must carry NO hardcoded discriminant /
-        # class number -- only placeholders -- so the download has to look them up.
-        import os
-        from lmfdb.number_fields.number_field import lean_certificate_dir
-        cert_dir = lean_certificate_dir(self.LEAN_LABEL)
-        assert cert_dir is not None
-        results = open(os.path.join(
-            cert_dir, 'IdealArithmetic', 'Examples', 'NF5_1_3790297_2',
-            'Results5_1_3790297_2.lean')).read()
+        from lmfdb.number_fields.lean_certificate import lean_deinterpolate
+        results = lean_deinterpolate(
+            "theorem K_discr' : discr K = 3790297 := K_discr\n"
+            "theorem class_number_K_eq_4' : classNumber K = 4 := class_number_K_eq_4\n")
         assert 'discr K = LMFDB_discriminant' in results
         assert 'classNumber K = LMFDB_classNumber' in results
-        assert 'discr K = 3790297' not in results     # the value is NOT in the source
+        assert 'discr K = 3790297' not in results
         assert 'classNumber K = 4' not in results
 
     def test_url_naturallabel(self):

@@ -1,9 +1,6 @@
 
-import io
-import json
 import os
 import re
-import zipfile
 
 from flask import abort, render_template, request, url_for, redirect, send_file, make_response
 from markupsafe import Markup
@@ -36,6 +33,8 @@ from lmfdb.number_fields import nf_page
 from lmfdb.number_fields.web_number_field import (
     field_pretty, WebNumberField, nf_knowl_guts, factor_base_factor,
     factor_base_factorization_latex, fake_label, formatfield)
+from lmfdb.number_fields.lean_certificate import (
+    lean_certificate_available, send_lean_certificate_zip)
 
 def bread_prefix(): return [('Number fields', url_for(".number_field_render_webpage"))]
 
@@ -50,11 +49,6 @@ init_nf_flag = False
 
 # For imaginary quadratic field class group data
 class_group_data_directory = os.path.expanduser('~/data/class_numbers')
-
-# Root of the on-disk Lean certificate store (blueprint-scoped):
-# <this dir>/lean_certificates/<label>/ is a self-contained, buildable Lake project.
-_LEAN_CERT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lean_certificates")
-
 
 class ClassGroupCol(MathCol):
     def display(self, rec):
@@ -420,96 +414,6 @@ def string2list(s):
     return [int(a) for a in s.split(',')]
 
 
-LEAN_README_TEMPLATE = """Lean certificate for the number field {label}
-=============================================
-LMFDB page:          https://www.lmfdb.org/NumberField/{label}
-Defining polynomial: {poly}
-
-How this certificate verifies the LMFDB entry
----------------------------------------------
-The certificate's source carries NO numbers of its own -- its theorems are
-stated with placeholders:
-
-    theorem K_discr'         : discr K = LMFDB_discriminant := K_discr
-    theorem class_number_...  : classNumber K = LMFDB_classNumber := class_number_K_eq_4
-
-so the only way to obtain a compilable file is to look the values up.  At download
-time LMFDB filled the placeholders with the live nf_fields database values for
-this field:
-
-    discr K        = {disc}
-    classNumber K  = {cn}
-
-The proof terms (K_discr, class_number_K_eq_4) are fixed, independently-checked
-proofs, so Lean accepts this file IF AND ONLY IF the LMFDB values equal the
-values the proofs establish.  Building the project (green check marks, no
-`sorry`) is therefore a machine-checked verification of LMFDB's discriminant and
-class number for {label}; if a value were wrong, the file would not compile.
-
-To build it (needs a Lean 4 + Mathlib setup); from a terminal in this folder:
-  lake exe cache get     # download the pinned, prebuilt Mathlib (do NOT skip)
-  lake build             # build the IdealArithmetic library
-then open the entry-point file in VS Code (Lean 4 extension).
-
-Entry point:
-  {entry}
-"""
-
-
-def lean_certificate_dir(label):
-    """Absolute path to the Lean certificate project for ``label``, or ``None``.
-
-    Pure filesystem check (no DB access), cheap enough for every page render.
-    ``FIELD_LABEL_RE`` admits only ``[0-9.et]`` with no empty components, so
-    ``label`` cannot escape ``_LEAN_CERT_ROOT`` (no ``/`` or ``..``); the lookup
-    is an exact directory match, closing off path traversal from the URL.
-    """
-    if not FIELD_LABEL_RE.fullmatch(label):
-        return None
-    cert_dir = os.path.join(_LEAN_CERT_ROOT, label)
-    return cert_dir if os.path.isdir(cert_dir) else None
-
-
-def _lean_metadata(cert_dir):
-    path = os.path.join(cert_dir, "metadata.json")
-    if os.path.isfile(path):
-        with open(path) as fh:
-            return json.load(fh)
-    return {}
-
-
-def _lean_entry_rel(label, meta):
-    if meta.get("entry_point"):
-        return meta["entry_point"]
-    u = label.replace(".", "_")
-    return f"IdealArithmetic/Examples/NF{u}/Results{u}.lean"
-
-
-def lean_interpolate(src, nf):
-    """Fill the certificate template's theorem *statements* with the live LMFDB
-    discriminant and class number, replacing the ``LMFDB_discriminant`` /
-    ``LMFDB_classNumber`` placeholders (the committed source carries no numeric
-    values of its own).  The proof terms are left untouched, so the file compiles
-    if and only if the LMFDB value equals the value the proof establishes -- the
-    Lean build is itself the verification of the LMFDB entry.  A bare numeral is
-    also accepted in place of a placeholder, so the substitution is idempotent.
-    """
-    src = re.sub(r'(discr K = )(?:LMFDB_discriminant|-?\d+)',
-                 lambda m: f'{m.group(1)}{int(nf.disc())}', src)
-    if nf.can_class_number():
-        src = re.sub(r'(classNumber K = )(?:LMFDB_classNumber|\d+)',
-                     lambda m: f'{m.group(1)}{int(nf.class_number())}', src)
-    return src
-
-
-def lean_certificate_readme(label, nf, meta):
-    disc = int(nf.disc())
-    cn = int(nf.class_number()) if nf.can_class_number() else "n/a"
-    return LEAN_README_TEMPLATE.format(
-        label=label, poly=meta.get("polynomial") or nf.poly(),
-        entry=_lean_entry_rel(label, meta), disc=disc, cn=cn)
-
-
 def render_field_webpage(args):
     data = None
     info = {}
@@ -811,7 +715,7 @@ def render_field_webpage(args):
         downloads.append(('{} commands'.format(lang[0]),
                           url_for(".nf_download", nf=label, download_type=lang[1])))
     downloads.append(('Underlying data', url_for(".nf_datapage", label=label)))
-    if lean_certificate_dir(label) is not None:
+    if lean_certificate_available(label, nf):
         downloads.append(('Lean certificate',
                           url_for('.nf_lean_certificate', label=label)))
     from lmfdb.artin_representations.math_classes import NumberFieldGaloisGroup
@@ -882,34 +786,12 @@ def nf_lean_certificate(label):
     Lake project (zip).  The entry-point file has the live LMFDB discriminant and
     class number spliced into its theorem statements, so a successful Lean build
     is a machine-checked verification of those LMFDB values."""
-    cert_dir = lean_certificate_dir(label)
-    if cert_dir is None:
-        return abort(404, f"No Lean certificate available for {label}")
+    if not FIELD_LABEL_RE.fullmatch(label):
+        return abort(404, f"Invalid label {label}")
     nf = WebNumberField(label)
     if nf.is_null():
         return abort(404, f"There is no number field with label {label}")
-    meta = _lean_metadata(cert_dir)
-    entry_rel = _lean_entry_rel(label, meta)
-    entry_path = os.path.join(cert_dir, entry_rel)
-    results_src = ""
-    if os.path.isfile(entry_path):
-        with open(entry_path) as fh:
-            results_src = fh.read()
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(cert_dir):
-            dirs.sort()
-            for fname in sorted(files):
-                rel = os.path.relpath(os.path.join(root, fname), cert_dir).replace(os.sep, "/")
-                if rel == entry_rel:
-                    continue  # replaced below with the LMFDB-interpolated version
-                zf.write(os.path.join(root, fname), arcname=f"{label}/{rel}")
-        if results_src:
-            zf.writestr(f"{label}/{entry_rel}", lean_interpolate(results_src, nf))
-        zf.writestr(f"{label}/README.txt", lean_certificate_readme(label, nf, meta))
-    buffer.seek(0)
-    return send_file(buffer, download_name=f"{label}_lean_certificate.zip",
-                     as_attachment=True, mimetype="application/zip")
+    return send_lean_certificate_zip(label, nf)
 
 
 @nf_page.route("/interesting")
